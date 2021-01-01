@@ -33,7 +33,7 @@ static const struct luaL_Reg eliProcExtra[] = {
     {NULL, NULL},
 };
 
-int luaopen_eli_proc_extra_utils(lua_State *L)
+int luaopen_eli_os_extra(lua_State *L)
 {
     lua_newtable(L);
     luaL_setfuncs(L, eliProcExtra, 0);
