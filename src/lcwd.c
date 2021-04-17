@@ -28,9 +28,12 @@
 #endif
 
 /*
-** This function returns the current directory
-** If unable to get the current directory, it returns nil
-**  and a string describing the error
+---#DES 'os.cwd'
+---
+---This function returns the current directory.
+---Returns nil nil, error desc and errno if unable to get the current directory.
+---@param path string
+---@return string|nil, nil|string, nil|integer
 */
 int eli_cwd(lua_State *L)
 {
@@ -73,7 +76,12 @@ int eli_cwd(lua_State *L)
 }
 
 /*
-** This function changes the working (current) directory
+---#DES 'os.chdir'
+---
+---This function changes the working (current) directory.
+---Returns true if successful othewise nil, error desc and errno
+---@param path string
+---@return boolean|nil, nil|string, nil|integer
 */
 int eli_chdir(lua_State *L)
 {

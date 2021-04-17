@@ -16,8 +16,16 @@
 #define SLEEP_MULTIPLIER 1e6
 #endif
 
-/* seconds --
- * interval units -- */
+/*
+---#DES 'os.sleep'
+---
+---Sleep n secods or less if divider specified
+---@param n integer
+---@param divider integer
+
+seconds --
+interval units -- 
+*/
 static int eli_sleep(lua_State *L)
 {
     lua_Number interval = luaL_checknumber(L, 1);
