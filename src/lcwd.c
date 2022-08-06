@@ -30,10 +30,9 @@
 /*
 ---#DES 'os.cwd'
 ---
----This function returns the current directory.
+---This function returns the current working directory.
 ---Returns nil nil, error desc and errno if unable to get the current directory.
----@param path string
----@return string|nil, nil|string, nil|integer
+---@return string?, string?, integer?
 */
 int eli_cwd(lua_State *L)
 {
@@ -81,7 +80,7 @@ int eli_cwd(lua_State *L)
 ---This function changes the working (current) directory.
 ---Returns true if successful othewise nil, error desc and errno
 ---@param path string
----@return boolean|nil, nil|string, nil|integer
+---@return boolean?, string?, integer?
 */
 int eli_chdir(lua_State *L)
 {

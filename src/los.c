@@ -21,10 +21,10 @@
 ---
 ---Sleep n secods or less if divider specified
 ---@param n integer
----@param divider integer
+---@param divider integer?
 
 seconds --
-interval units -- 
+interval units --
 */
 static int eli_sleep(lua_State *L)
 {
