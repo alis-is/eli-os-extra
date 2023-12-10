@@ -26,16 +26,24 @@ static void call_lua_callback(lua_State* L, int signum);
 
 #ifdef _WIN32
 BOOL WINAPI
-windows_signal_handler(DWORD signum) {
+windows_ctrl_handler(DWORD signum) {
+    // convert windows signals to posix signals
+    switch (signum) {
+        case CTRL_C_EVENT: signum = SIGINT; break;
+        case CTRL_BREAK_EVENT: signum = SIGBREAK; break;
+        case CTRL_CLOSE_EVENT: signum = SIGTERM; break;
+        case CTRL_LOGOFF_EVENT: signum = SIGTERM; break;
+        case CTRL_SHUTDOWN_EVENT: signum = SIGTERM; break;
+    }
     trigger_lua_callback(mainL, signum);
     return TRUE; // Indicate that the handler handled the event.
 }
-#else
+#endif
+
 void
-posix_signal_handler(int signum) {
+standard_signal_handler(int signum) {
     trigger_lua_callback(mainL, signum);
 }
-#endif
 
 /*
 ** Hook set by signal function to stop the interpreter.
@@ -83,16 +91,6 @@ call_lua_callback(lua_State* L, lua_Debug* ar) {
 
     while (count--) {
         int signum = queued[count];
-#ifdef _WIN32
-        // convert windows signals to posix signals
-        switch (signum) {
-            case CTRL_C_EVENT: signum = SIGINT; break;
-            case CTRL_BREAK_EVENT: signum = SIGBREAK; break;
-            case CTRL_CLOSE_EVENT: signum = SIGTERM; break;
-            case CTRL_LOGOFF_EVENT: signum = SIGTERM; break;
-            case CTRL_SHUTDOWN_EVENT: signum = SIGTERM; break;
-        }
-#endif
         lua_rawgeti(L, -1, signum);
         lua_pushinteger(L, signum);
         if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
@@ -132,12 +130,15 @@ eli_os_signal_handle(lua_State* L) {
     int signum = luaL_checkinteger(L, 1);
     luaL_checktype(L, 2, LUA_TFUNCTION);
 #ifdef _WIN32
-    if (!SetConsoleCtrlHandler(windows_signal_handler, TRUE)) {
+    if (!SetConsoleCtrlHandler(windows_ctrl_handler, TRUE)) {
+        return push_error(L, "failed to set signal handler");
+    }
+    if (signal(signum, standard_signal_handler) == SIG_ERR) {
         return push_error(L, "failed to set signal handler");
     }
 #elif defined(LUA_USE_POSIX)
     struct sigaction sa;
-    sa.sa_handler = handler;
+    sa.sa_handler = standard_signal_handler;
     sa.sa_flags = 0;
     sigemptyset(&sa.sa_mask); /* do not mask any signal */
     //sigaction(sig, &sa, NULL);
@@ -145,7 +146,7 @@ eli_os_signal_handle(lua_State* L) {
         return push_error(L, "failed to set signal handler");
     }
 #else
-    if (signal(signum, handler) == SIG_ERR) {
+    if (signal(signum, standard_signal_handler) == SIG_ERR) {
         return push_error(L, "failed to set signal handler");
     }
 #endif
@@ -164,6 +165,9 @@ eli_os_signal_reset(lua_State* L) {
 
 #ifdef _WIN32
     if (!SetConsoleCtrlHandler(NULL, FALSE)) {
+        return push_error(L, "failed to reset signal handler");
+    }
+    if (signal(signum, SIG_DFL) == SIG_ERR) {
         return push_error(L, "failed to reset signal handler");
     }
 #elif defined(LUA_USE_POSIX)
