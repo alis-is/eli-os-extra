@@ -22,7 +22,8 @@ static volatile sig_atomic_t signals[SIGNAL_QUEUE_MAX];
 static lua_State* mainL = NULL;
 static int handlersRef = LUA_NOREF;
 
-static void call_lua_callback(lua_State* L, int signum);
+static void call_lua_callback(lua_State* L, lua_Debug* ar);
+static void trigger_lua_callback(lua_State* L, int signum);
 
 #ifdef _WIN32
 BOOL WINAPI
@@ -64,7 +65,7 @@ lua_interrupt(lua_State* L, lua_Debug* ar) {
 static void
 default_lua_sigint_handler(int i) {
     int flag = LUA_MASKCALL | LUA_MASKRET | LUA_MASKLINE | LUA_MASKCOUNT;
-    setsignal(i, SIG_DFL); /* if another SIGINT happens, terminate process */
+    signal(i, SIG_DFL); /* if another SIGINT happens, terminate process */
     lua_sethook(mainL, lua_interrupt, flag, 1);
 }
 
@@ -115,7 +116,7 @@ trigger_lua_callback(lua_State* L, int signum) {
 #endif
     defer_signal++;
     signals[signal_count++] = signum;
-    lua_sethook(mainL, lua_interrupt, LUA_MASKCALL | LUA_MASKRET | LUA_MASKLINE | LUA_MASKCOUNT, 1);
+    lua_sethook(mainL, call_lua_callback, LUA_MASKCALL | LUA_MASKRET | LUA_MASKLINE | LUA_MASKCOUNT, 1);
     defer_signal--;
 #if defined(_WIN32)
     LeaveCriticalSection(&SignalCriticalSection);
