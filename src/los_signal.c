@@ -229,6 +229,10 @@ static const struct luaL_Reg eliOsSignal[] = {
 // NOTE: do not load/open "os.signal" outside of main thread/main lua state
 int
 luaopen_eli_os_signal(lua_State* L) {
+#ifdef _WIN32
+    InitializeCriticalSection(&SignalCriticalSection);
+#endif
+
     mainL = L;
     lua_newtable(L);
     handlersRef = luaL_ref(L, LUA_REGISTRYINDEX);
