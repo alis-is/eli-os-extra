@@ -243,5 +243,7 @@ luaopen_eli_os_signal(lua_State* L) {
     lua_setfield(L, -2, "SIGKILL");
     lua_pushinteger(L, SIGINT);
     lua_setfield(L, -2, "SIGINT");
+    lua_pushinteger(L, 13 /*SIGPIPE*/);
+    lua_setfield(L, -2, "SIGPIPE");
     return 1;
 }
