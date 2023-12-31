@@ -7,11 +7,14 @@
 #include "lutil.h"
 
 #ifdef _WIN32
-CRITICAL_SECTION SignalCriticalSection;
 #include <windows.h>
-
 #else
 #include <unistd.h>
+#endif
+
+#ifdef _WIN32
+CRITICAL_SECTION SignalCriticalSection;
+static int subscribedCtrlEvents = 0;
 #endif
 
 #define SIGNAL_QUEUE_MAX 25
@@ -26,12 +29,23 @@ static void call_lua_callback(lua_State* L, lua_Debug* ar);
 static void trigger_lua_callback(lua_State* L, int signum);
 
 #ifdef _WIN32
+
+int
+signal_to_ctrl_event(int signum) {
+    switch (signum) {
+        case SIGINT: return CTRL_C_EVENT;
+        case SIGBREAK: return CTRL_BREAK_EVENT;
+        case SIGTERM: return CTRL_BREAK_EVENT;
+        default: return -1;
+    }
+}
+
 BOOL WINAPI
 windows_ctrl_handler(DWORD signum) {
     // convert windows signals to posix signals
     switch (signum) {
         case CTRL_C_EVENT: signum = SIGINT; break;
-        case CTRL_BREAK_EVENT: signum = SIGBREAK; break;
+        case CTRL_BREAK_EVENT: signum = SIGTERM; break;
         case CTRL_CLOSE_EVENT: signum = SIGTERM; break;
         case CTRL_LOGOFF_EVENT: signum = SIGTERM; break;
         case CTRL_SHUTDOWN_EVENT: signum = SIGTERM; break;
@@ -93,6 +107,10 @@ call_lua_callback(lua_State* L, lua_Debug* ar) {
     while (count--) {
         int signum = queued[count];
         lua_rawgeti(L, -1, signum);
+        if (lua_isnil(L, -1)) {
+            lua_pop(L, 1);
+            continue;
+        }
         lua_pushinteger(L, signum);
         if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
             lua_writestringerror("error calling signal handler: %s\n", lua_tostring(L, -1));
@@ -131,8 +149,14 @@ eli_os_signal_handle(lua_State* L) {
     int signum = luaL_checkinteger(L, 1);
     luaL_checktype(L, 2, LUA_TFUNCTION);
 #ifdef _WIN32
-    if (!SetConsoleCtrlHandler(windows_ctrl_handler, TRUE)) {
-        return push_error(L, "failed to set signal handler");
+    int event = signal_to_ctrl_event(signum);
+    if (event > -1) {
+        if (subscribedCtrlEvents == 0) {
+            if (!SetConsoleCtrlHandler(windows_ctrl_handler, TRUE)) {
+                return push_error(L, "failed to set signal handler");
+            }
+        }
+        subscribedCtrlEvents |= (1 << event);
     }
     if (signal(signum, standard_signal_handler) == SIG_ERR) {
         return push_error(L, "failed to set signal handler");
@@ -165,8 +189,15 @@ eli_os_signal_reset(lua_State* L) {
     int signum = luaL_checkinteger(L, 1);
 
 #ifdef _WIN32
-    if (!SetConsoleCtrlHandler(NULL, FALSE)) {
-        return push_error(L, "failed to reset signal handler");
+    int event = signal_to_ctrl_event(signum);
+    if (event > -1 && subscribedCtrlEvents > 0) {
+        // check if subscribedCtrlEvents is 0 or subscribedCtrlEvents - 1 << event is 0
+        subscribedCtrlEvents &= ~(1 << event);
+        if (subscribedCtrlEvents == 0) {
+            if (!SetConsoleCtrlHandler(windows_ctrl_handler, FALSE)) {
+                return push_error(L, "failed to reset signal handler");
+            }
+        }
     }
     if (signal(signum, SIG_DFL) == SIG_ERR) {
         return push_error(L, "failed to reset signal handler");
