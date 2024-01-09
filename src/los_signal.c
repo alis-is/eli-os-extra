@@ -20,13 +20,17 @@ static int subscribedCtrlEvents = 0;
 #define SIGNAL_QUEUE_MAX 25
 static volatile sig_atomic_t signal_pending = 0, defer_signal = 0, processing_signals = 0;
 static volatile sig_atomic_t signal_count = 0;
+
 static volatile sig_atomic_t signals[SIGNAL_QUEUE_MAX];
+#ifdef _WIN32
+static volatile sig_atomic_t signalKinds[SIGNAL_QUEUE_MAX];
+#endif
 
 static lua_State* mainL = NULL;
 static int handlersRef = LUA_NOREF;
 
 static void call_lua_callback(lua_State* L, lua_Debug* ar);
-static void trigger_lua_callback(lua_State* L, int signum);
+static void trigger_lua_callback(lua_State* L, int signum, int ctrl_event);
 
 #ifdef _WIN32
 
@@ -45,19 +49,19 @@ windows_ctrl_handler(DWORD signum) {
     // convert windows signals to posix signals
     switch (signum) {
         case CTRL_C_EVENT: signum = SIGINT; break;
-        case CTRL_BREAK_EVENT: signum = SIGTERM; break;
+        case CTRL_BREAK_EVENT: signum = SIGBREAK; break;
         case CTRL_CLOSE_EVENT: signum = SIGTERM; break;
         case CTRL_LOGOFF_EVENT: signum = SIGTERM; break;
         case CTRL_SHUTDOWN_EVENT: signum = SIGTERM; break;
     }
-    trigger_lua_callback(mainL, signum);
+    trigger_lua_callback(mainL, signum, 1);
     return TRUE; // Indicate that the handler handled the event.
 }
 #endif
 
 void
 standard_signal_handler(int signum) {
-    trigger_lua_callback(mainL, signum);
+    trigger_lua_callback(mainL, signum, 0);
 }
 
 /*
@@ -89,16 +93,20 @@ call_lua_callback(lua_State* L, lua_Debug* ar) {
     lua_sethook(L, NULL, 0, 0); /* reset hook */
 
 // copy signals to cleanup queue and allow new signals to be queued
-#if defined(_WIN32)
+#ifdef _WIN32
     EnterCriticalSection(&SignalCriticalSection);
 #endif
     processing_signals = 1;
     sig_atomic_t count = signal_count;
     sig_atomic_t queued[SIGNAL_QUEUE_MAX];
     memcpy(queued, signals, sizeof(sig_atomic_t) * count);
+#ifdef _WIN32
+    sig_atomic_t queuedKinds[SIGNAL_QUEUE_MAX];
+    memcpy(queuedKinds, signalKinds, sizeof(sig_atomic_t) * count);
+#endif
     signal_count = 0;
     processing_signals = 0;
-#if defined(_WIN32)
+#ifdef _WIN32
     LeaveCriticalSection(&SignalCriticalSection);
 #endif
 
@@ -112,7 +120,12 @@ call_lua_callback(lua_State* L, lua_Debug* ar) {
             continue;
         }
         lua_pushinteger(L, signum);
-        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+#ifdef _WIN32
+        lua_pushboolean(L, queuedKinds[count]);
+#else
+        lua_pushboolean(L, 0);
+#endif
+        if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
             lua_writestringerror("error calling signal handler: %s\n", lua_tostring(L, -1));
         }
     }
@@ -121,7 +134,7 @@ call_lua_callback(lua_State* L, lua_Debug* ar) {
 // inspired by https://github.com/luaposix/luaposix/blob/aa2c8bf5af2eef5dd1e3de5f6ca55b90427c1b58/ext/posix/signal.c#L158
 // and lua.c#70 (laction)
 static void
-trigger_lua_callback(lua_State* L, int signum) {
+trigger_lua_callback(lua_State* L, int signum, int ctrl_event) {
     if (defer_signal || processing_signals) {
         signal_pending = signum;
         return;
@@ -129,14 +142,18 @@ trigger_lua_callback(lua_State* L, int signum) {
     if (signal_count == SIGNAL_QUEUE_MAX) {
         return;
     }
-#if defined(_WIN32)
+#ifdef _WIN32
     EnterCriticalSection(&SignalCriticalSection);
 #endif
     defer_signal++;
-    signals[signal_count++] = signum;
+    signals[signal_count] = signum;
+#ifdef _WIN32
+    signalKinds[signal_count] = ctrl_event;
+#endif
+    signal_count++;
     lua_sethook(mainL, call_lua_callback, LUA_MASKCALL | LUA_MASKRET | LUA_MASKLINE | LUA_MASKCOUNT, 1);
     defer_signal--;
-#if defined(_WIN32)
+#ifdef _WIN32
     LeaveCriticalSection(&SignalCriticalSection);
 #endif
     if (defer_signal == 0 && signal_pending != 0) {
@@ -271,7 +288,7 @@ luaopen_eli_os_signal(lua_State* L) {
     lua_newtable(L);
     luaL_setfuncs(L, eliOsSignal, 0);
 
-    // add signals - SIGTERM, SIGKILL and SIGINT
+    // add common signals - SIGTERM, SIGKILL and SIGINT...
     lua_pushinteger(L, SIGTERM);
     lua_setfield(L, -2, "SIGTERM");
     lua_pushinteger(L, 9 /*SIGKILL*/);
@@ -280,5 +297,7 @@ luaopen_eli_os_signal(lua_State* L) {
     lua_setfield(L, -2, "SIGINT");
     lua_pushinteger(L, 13 /*SIGPIPE*/);
     lua_setfield(L, -2, "SIGPIPE");
+    lua_pushinteger(L, 21 /* SIGBREAK */);
+    lua_setfield(L, -2, "SIGBREAK"); // windows
     return 1;
 }
