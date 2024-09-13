@@ -24,8 +24,7 @@ interval divider --
 static int eli_sleep(lua_State *L)
 {
 	lua_Number interval = luaL_checknumber(L, 1);
-	lua_Number divider = luaL_optnumber(L, 2, 1);
-	sleep_for_fraction(interval, divider);
+	sleep_for_fraction(interval, get_sleep_divider_from_stack(L, 2, 1));
 	return 0;
 }
 
