@@ -3,17 +3,12 @@
 
 #include <string.h>
 #include "lcwd.h"
+#include "lutil.h"
 
 #ifdef _WIN32
 #include <windows.h>
-
-#define _lsleep Sleep
-#define SLEEP_MULTIPLIER 1e3
 #else
 #include <unistd.h>
-
-#define _lsleep nanosleep
-#define SLEEP_MULTIPLIER 1e9
 #endif
 
 /*
@@ -24,13 +19,13 @@
 ---@param divider integer?
 
 seconds --
-interval units --
+interval divider --
 */
 static int eli_sleep(lua_State *L)
 {
 	lua_Number interval = luaL_checknumber(L, 1);
-	lua_Number units = luaL_optnumber(L, 2, 1);
-	_lsleep(SLEEP_MULTIPLIER * interval / units);
+	lua_Number divider = luaL_optnumber(L, 2, 1);
+	sleep_for_fraction(interval, divider);
 	return 0;
 }
 
