@@ -16,7 +16,7 @@
 ---
 ---Sleep n secods or less if divider specified
 ---@param n integer
----@param divider integer?
+---@param divider integer | '"s"' | '"ms"' | nil
 
 seconds --
 interval divider --
