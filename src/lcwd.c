@@ -37,40 +37,37 @@
 int eli_cwd(lua_State *L)
 {
 #ifdef NO_GETCWD
-    lua_pushnil(L);
-    lua_pushstring(L, "Function 'getcwd' not provided by system");
-    return 2;
+	lua_pushnil(L);
+	lua_pushstring(L, "Function 'getcwd' not provided by system");
+	return 2;
 #else
-    char *path = NULL;
-    /* Passing (NULL, 0) is not guaranteed to work. Use a temp buffer and size instead. */
-    size_t size = LMAXPATHLEN; /* initial buffer size */
-    int result;
-    while (1)
-    {
-        char *path2 = realloc(path, size);
-        if (!path2) /* failed to allocate */
-        {
-            result = push_error(L, "get_dir realloc() failed");
-            break;
-        }
-        path = path2;
-        if (_lget_cwd(path, size) != NULL)
-        {
-            /* success, push the path to the Lua stack */
-            lua_pushstring(L, path);
-            result = 1;
-            break;
-        }
-        if (errno != ERANGE)
-        { /* unexpected error */
-            result = push_error(L, "get_dir getcwd() failed");
-            break;
-        }
-        /* ERANGE = insufficient buffer capacity, double size and retry */
-        size *= 2;
-    }
-    free(path);
-    return result;
+	char *path = NULL;
+	/* Passing (NULL, 0) is not guaranteed to work. Use a temp buffer and size instead. */
+	size_t size = LMAXPATHLEN; /* initial buffer size */
+	int result;
+	while (1) {
+		char *path2 = realloc(path, size);
+		if (!path2) /* failed to allocate */
+		{
+			result = push_error(L, "get_dir realloc() failed");
+			break;
+		}
+		path = path2;
+		if (_lget_cwd(path, size) != NULL) {
+			/* success, push the path to the Lua stack */
+			lua_pushstring(L, path);
+			result = 1;
+			break;
+		}
+		if (errno != ERANGE) { /* unexpected error */
+			result = push_error(L, "get_dir getcwd() failed");
+			break;
+		}
+		/* ERANGE = insufficient buffer capacity, double size and retry */
+		size *= 2;
+	}
+	free(path);
+	return result;
 #endif
 }
 
@@ -84,12 +81,11 @@ int eli_cwd(lua_State *L)
 */
 int eli_chdir(lua_State *L)
 {
-    const char *path = luaL_checkstring(L, 1);
-    if (_lchdir(path))
-    {
-        return push_error(L, "Unable to change working directory");
-    }
+	const char *path = luaL_checkstring(L, 1);
+	if (_lchdir(path)) {
+		return push_error(L, "Unable to change working directory");
+	}
 
-    lua_pushboolean(L, 1);
-    return 1;
+	lua_pushboolean(L, 1);
+	return 1;
 }

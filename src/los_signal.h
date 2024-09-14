@@ -3,6 +3,6 @@
 
 #include "lua.h"
 
-int luaopen_eli_os_signal(lua_State* L);
+int luaopen_eli_os_signal(lua_State *L);
 
 #endif // LUA_OS_EXTRA_SIGNAL_H
