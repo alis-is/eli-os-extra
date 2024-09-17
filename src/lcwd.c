@@ -2,7 +2,7 @@
 #include "lauxlib.h"
 #include <errno.h>
 
-#include "lutil.h"
+#include "lerror.h"
 #include <stdlib.h>
 
 #ifdef _WIN32

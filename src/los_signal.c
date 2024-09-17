@@ -4,7 +4,7 @@
 #include <signal.h>
 #include <string.h>
 #include "lcwd.h"
-#include "lutil.h"
+#include "lerror.h"
 
 #ifdef _WIN32
 #include <windows.h>
