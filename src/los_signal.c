@@ -1,4 +1,5 @@
 #include "lauxlib.h"
+#include "llimits.h"
 #include "lua.h"
 
 #include <signal.h>
