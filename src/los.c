@@ -14,16 +14,19 @@
 /*
 ---#DES 'os.sleep'
 ---
----Sleep duration seconds (default) or less if divider/unit specified
+---Sleep duration ms (default) or adjusted by unit/divider.
 ---@param duration integer
 ---@param unit_or_divider '"s"' | '"ms"' | integer | nil
 
 */
 static int eli_sleep(lua_State *L)
 {
-	int duration = (int)luaL_checknumber(L, 1);
-	sleep_ms(sleep_duration_to_ms(duration,
-				      get_sleep_divider_from_state(L, 2, 1)));
+	lua_Number duration = luaL_checknumber(L, 1);
+	double divider = get_ms_divider_from_state(L, 2, 1.0);
+	double final_seconds = (double)duration / divider;
+
+	sleep_ms(final_seconds);
+
 	return 0;
 }
 
