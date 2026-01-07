@@ -85,6 +85,21 @@ static void enqueue_signal(int signum, int kind)
 // NO LUA API CALLS ALLOWED HERE.
 BOOL WINAPI windows_ctrl_handler(DWORD signum)
 {
+	int is_subscribed = 0;
+
+	EnterCriticalSection(&SignalCriticalSection);
+	if (subscribedCtrlEvents & (1 << signum)) {
+		is_subscribed = 1;
+	}
+	LeaveCriticalSection(&SignalCriticalSection);
+
+	// If we are not subscribed to this specific event, return FALSE.
+	// This allows the next handler (or the system default) to process it.
+	// e.g. If user handles SIGTERM but not SIGINT, Ctrl+C will now correctly terminate the app.
+	if (!is_subscribed) {
+		return FALSE;
+	}
+
 	int mapped_sig = SIGTERM;
 	switch (signum) {
 	case CTRL_C_EVENT:
@@ -109,6 +124,7 @@ BOOL WINAPI windows_ctrl_handler(DWORD signum)
 #endif
 
 // POSIX: Runs in the same thread, interrupting execution.
+// this include windows signal handlers
 void standard_signal_handler(int signum)
 {
 	enqueue_signal(signum, 0);
