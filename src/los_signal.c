@@ -28,6 +28,8 @@ static int subscribedCtrlEvents = 0;
 
 #define SIGNAL_QUEUE_MAX 50
 
+static const char ELI_SIGNAL_IGNORE = 0;
+
 // The "Flag": An atomic indicator that work is waiting.
 // Checked by the Lua hook. Set by C signal handlers.
 static volatile sig_atomic_t g_signal_pending = 0;
@@ -217,13 +219,26 @@ static int eli_os_signal_poll(lua_State *L)
 
 static int eli_os_signal_handle(lua_State *L)
 {
-	int signum = (int)luaL_checkinteger(L, 1);
-	luaL_checktype(L, 2, LUA_TFUNCTION);
+	// Check if the 2nd arg is our IGNORE atom
+	int is_ignore = 0;
+	if (lua_type(L, 2) == LUA_TLIGHTUSERDATA) {
+		if (lua_touserdata(L, 2) == (void *)&ELI_SIGNAL_IGNORE) {
+			is_ignore = 1;
+		}
+	}
+	// If ignoring and the signal number is nil, just return (no-op)
+	if (is_ignore && lua_isnil(L, 1)) {
+		return 0;
+	}
 
-	// Register OS Handler
+	int signum = (int)luaL_checkinteger(L, 1);
+	// If it's NOT ignore, it MUST be a function
+	if (!is_ignore) {
+		luaL_checktype(L, 2, LUA_TFUNCTION);
+	}
+
 #ifdef _WIN32
 	int event = -1;
-	// Map signal to Windows Event if possible
 	switch (signum) {
 	case SIGINT:
 		event = CTRL_C_EVENT;
@@ -235,7 +250,49 @@ static int eli_os_signal_handle(lua_State *L)
 		event = CTRL_CLOSE_EVENT;
 		break;
 	}
+#endif
 
+	if (is_ignore) {
+		// Remove any existing Lua handler for this signal so we don't leak memory
+		lua_rawgeti(L, LUA_REGISTRYINDEX, handlersRef);
+		lua_pushvalue(L, 1); // Key: signum
+		lua_pushnil(L); // Value: nil (removes entry)
+		lua_rawset(L, -3);
+		lua_pop(L, 1);
+
+#ifdef _WIN32
+		if (event > -1 && (subscribedCtrlEvents & (1 << event))) {
+			subscribedCtrlEvents &= ~(1 << event);
+
+			// If we are no longer listening to ANY Windows events, remove the handler entirely
+			if (subscribedCtrlEvents == 0) {
+				SetConsoleCtrlHandler(windows_ctrl_handler,
+						      FALSE);
+			}
+		}
+
+		// On Windows, 'signal(SIG_IGN)' works for CRT signals like SIGINT.
+		// For Ctrl handlers, we might simply NOT handle it in our C handler,
+		// letting the default Windows behavior take over, or explicitly return FALSE.
+		// But commonly, setting SIG_IGN on the CRT level is sufficient for CLI tools.
+		if (signal(signum, SIG_IGN) == SIG_ERR) {
+			return push_error(L, "failed to set signal to ignore");
+		}
+#else
+		struct sigaction sa;
+		sa.sa_handler = SIG_IGN;
+		sa.sa_flags = 0;
+		sigemptyset(&sa.sa_mask);
+		if (sigaction(signum, &sa, NULL) == -1) {
+			return push_error(L, "failed to set signal to ignore");
+		}
+#endif
+		// We are done. We do NOT enable the hook because no Lua code needs to run.
+		return 0;
+	}
+
+	// Register OS Handler
+#ifdef _WIN32
 	if (event > -1) {
 		if (subscribedCtrlEvents == 0) {
 			if (!SetConsoleCtrlHandler(windows_ctrl_handler,
@@ -372,6 +429,9 @@ int luaopen_eli_os_signal(lua_State *L)
 
 	lua_newtable(L);
 	luaL_setfuncs(L, eliOsSignal, 0);
+
+	lua_pushlightuserdata(L, (void *)&ELI_SIGNAL_IGNORE);
+	lua_setfield(L, -2, "IGNORE_SIGNAL");
 
 	// Constants
 	lua_pushinteger(L, SIGTERM);
