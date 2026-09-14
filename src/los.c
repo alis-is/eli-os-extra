@@ -1,9 +1,10 @@
 #include "lauxlib.h"
 #include "lua.h"
 
-#include <string.h>
 #include "lcwd.h"
 #include "lsleep.h"
+#include "lenv.h"
+#include "los_signal.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -37,9 +38,32 @@ static const struct luaL_Reg eliOsExtra[] = {
 	{ NULL, NULL },
 };
 
+static void eli_os_set_field(lua_State *L, const char *name, int value)
+{
+	lua_getglobal(L, "os");
+	if (lua_istable(L, -1)) {
+		lua_pushvalue(L, value);
+		lua_setfield(L, -2, name);
+	}
+	lua_pop(L, 1);
+}
+
 int luaopen_eli_os_extra(lua_State *L)
 {
-	lua_newtable(L);
-	luaL_setfuncs(L, eliOsExtra, 0);
+	int extra;
+	int signal;
+
+	luaL_newlib(L, eliOsExtra);
+	extra = lua_gettop(L);
+
+	eli_env_install(L);
+
+	eli_os_signal_open(L);
+	signal = lua_gettop(L);
+	lua_pushvalue(L, signal);
+	lua_setfield(L, extra, "signal");
+	eli_os_set_field(L, "signal", signal);
+	lua_pop(L, 1);
+
 	return 1;
 }

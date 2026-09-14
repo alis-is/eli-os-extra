@@ -6,7 +6,12 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "c11threads.h"
+#include "eruntime.h"
 #include "lcwd.h"
+#include "lenv.h"
+#include "los_signal.h"
+#include <errno.h>
 #include "lerror.h"
 
 #ifdef _WIN32
@@ -22,8 +27,70 @@
 */
 
 #ifdef _WIN32
-CRITICAL_SECTION SignalCriticalSection;
+static CRITICAL_SECTION SignalCriticalSection;
+static once_flag signal_once = ONCE_FLAG_INIT;
 static int subscribedCtrlEvents = 0;
+
+static void signal_runtime_init(void)
+{
+	InitializeCriticalSection(&SignalCriticalSection);
+}
+#endif
+
+#ifndef _WIN32
+static unsigned system_waiters;
+static struct sigaction system_int, system_quit;
+
+int eli_signal_setsigaction(int signum, const struct sigaction *action)
+{
+	int result = 0, error;
+	eli_env_lock();
+	if (system_waiters && (signum == SIGINT || signum == SIGQUIT)) {
+		*(signum == SIGINT ? &system_int : &system_quit) = *action;
+	} else {
+		result = sigaction(signum, action, NULL);
+	}
+	error = errno;
+	eli_env_unlock();
+	errno = error;
+	return result;
+}
+
+void eli_signal_child_sigdefault(sigset_t *defaults)
+{
+	sigemptyset(defaults);
+	if (system_waiters) {
+		if (system_int.sa_handler != SIG_IGN) sigaddset(defaults, SIGINT);
+		if (system_quit.sa_handler != SIG_IGN) sigaddset(defaults, SIGQUIT);
+	}
+}
+
+/* SIGINT/SIGQUIT dispositions are process-wide. Overlapping os.execute
+ * calls share the saved dispositions until the last child wait finishes. */
+int eli_signal_system_begin(void)
+{
+	if (system_waiters == 0) {
+		struct sigaction ignore = { 0 };
+		ignore.sa_handler = SIG_IGN;
+		sigemptyset(&ignore.sa_mask);
+		if (sigaction(SIGINT, &ignore, &system_int) == -1) return errno;
+		if (sigaction(SIGQUIT, &ignore, &system_quit) == -1) {
+			int error = errno;
+			sigaction(SIGINT, &system_int, NULL);
+			return error;
+		}
+	}
+	system_waiters++;
+	return 0;
+}
+
+void eli_signal_system_end(void)
+{
+	if (--system_waiters == 0) {
+		sigaction(SIGINT, &system_int, NULL);
+		sigaction(SIGQUIT, &system_quit, NULL);
+	}
+}
 #endif
 
 #define SIGNAL_QUEUE_MAX 50
@@ -40,8 +107,30 @@ static volatile sig_atomic_t g_signal_queue[SIGNAL_QUEUE_MAX];
 static volatile sig_atomic_t g_kind_queue[SIGNAL_QUEUE_MAX];
 #endif
 
-// Registry reference to the table holding Lua callback functions
-static int handlersRef = LUA_NOREF;
+/* Per-state registry table holding Lua callback functions. Keeping it in the
+ * state's registry avoids cross-state reference collisions; only the main
+ * state may register handlers anyway. */
+#define ELI_SIGNAL_HANDLERS_KEY "eli.os.signal.handlers"
+
+static void push_handlers(lua_State *L)
+{
+	lua_getfield(L, LUA_REGISTRYINDEX, ELI_SIGNAL_HANDLERS_KEY);
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 1);
+		lua_newtable(L);
+		lua_pushvalue(L, -1);
+		lua_setfield(L, LUA_REGISTRYINDEX, ELI_SIGNAL_HANDLERS_KEY);
+	}
+}
+
+static int signal_require_main_state(lua_State *L, const char *operation)
+{
+	if (!eli_runtime_is_main_state(L)) {
+		return luaL_error(
+		   L, "os.signal.%s is only available in the main state", operation);
+	}
+	return 0;
+}
 
 /*
 ** ===============================================================
@@ -142,11 +231,6 @@ static void check_signal_hook(lua_State *L, lua_Debug *ar)
 {
 	(void)ar; // Unused
 
-	// Fast exit if nothing to do (very cheap check)
-	if (!g_signal_pending) {
-		return;
-	}
-
 	// Capture the queue safely into local variables
 	int count = 0;
 	int queued_sigs[SIGNAL_QUEUE_MAX];
@@ -154,6 +238,11 @@ static void check_signal_hook(lua_State *L, lua_Debug *ar)
 	int queued_kinds[SIGNAL_QUEUE_MAX];
 
 	EnterCriticalSection(&SignalCriticalSection);
+	// Fast exit if nothing to do (under the lock: the flag is cross-thread)
+	if (!g_signal_pending) {
+		LeaveCriticalSection(&SignalCriticalSection);
+		return;
+	}
 	count = g_queue_count;
 	if (count > 0) {
 		memcpy(queued_sigs, (void *)g_signal_queue,
@@ -164,6 +253,11 @@ static void check_signal_hook(lua_State *L, lua_Debug *ar)
 	}
 	LeaveCriticalSection(&SignalCriticalSection);
 #else
+	// Fast exit if nothing to do (very cheap check)
+	if (!g_signal_pending) {
+		return;
+	}
+
 	// POSIX: We must block signals while reading the queue to prevent
 	// a signal handler from modifying it while we copy.
 	sigset_t mask, old_mask;
@@ -184,7 +278,7 @@ static void check_signal_hook(lua_State *L, lua_Debug *ar)
 	// Dispatch to Lua Handlers
 	if (count > 0) {
 		// We need the handlers table
-		lua_rawgeti(L, LUA_REGISTRYINDEX, handlersRef);
+		push_handlers(L);
 
 		for (int i = 0; i < count; i++) {
 			int sig = queued_sigs[i];
@@ -224,6 +318,9 @@ static void check_signal_hook(lua_State *L, lua_Debug *ar)
 // Default is usually sufficient (2000), but tight loops might need tuning.
 static int eli_os_signal_poll(lua_State *L)
 {
+	if (signal_require_main_state(L, "poll")) {
+		return 0; /* not reached; luaL_error long jumps */
+	}
 	int count = (int)luaL_checkinteger(L, 1);
 	if (count <= 0)
 		count = 2000;
@@ -235,6 +332,10 @@ static int eli_os_signal_poll(lua_State *L)
 
 static int eli_os_signal_handle(lua_State *L)
 {
+	if (signal_require_main_state(L, "handle")) {
+		return 0; /* not reached; luaL_error long jumps */
+	}
+
 	// Check if the 2nd arg is our IGNORE atom
 	int is_ignore = 0;
 	if (lua_type(L, 2) == LUA_TLIGHTUSERDATA) {
@@ -270,13 +371,14 @@ static int eli_os_signal_handle(lua_State *L)
 
 	if (is_ignore) {
 		// Remove any existing Lua handler for this signal so we don't leak memory
-		lua_rawgeti(L, LUA_REGISTRYINDEX, handlersRef);
+		push_handlers(L);
 		lua_pushvalue(L, 1); // Key: signum
 		lua_pushnil(L); // Value: nil (removes entry)
 		lua_rawset(L, -3);
 		lua_pop(L, 1);
 
 #ifdef _WIN32
+		EnterCriticalSection(&SignalCriticalSection);
 		if (event > -1 && (subscribedCtrlEvents & (1 << event))) {
 			subscribedCtrlEvents &= ~(1 << event);
 
@@ -286,6 +388,7 @@ static int eli_os_signal_handle(lua_State *L)
 						      FALSE);
 			}
 		}
+		LeaveCriticalSection(&SignalCriticalSection);
 
 		// On Windows, 'signal(SIG_IGN)' works for CRT signals like SIGINT.
 		// For Ctrl handlers, we might simply NOT handle it in our C handler,
@@ -299,7 +402,7 @@ static int eli_os_signal_handle(lua_State *L)
 		sa.sa_handler = SIG_IGN;
 		sa.sa_flags = 0;
 		sigemptyset(&sa.sa_mask);
-		if (sigaction(signum, &sa, NULL) == -1) {
+		if (eli_signal_setsigaction(signum, &sa) == -1) {
 			return push_error(L, "failed to set signal to ignore");
 		}
 #endif
@@ -310,15 +413,18 @@ static int eli_os_signal_handle(lua_State *L)
 	// Register OS Handler
 #ifdef _WIN32
 	if (event > -1) {
+		EnterCriticalSection(&SignalCriticalSection);
 		if (subscribedCtrlEvents == 0) {
 			if (!SetConsoleCtrlHandler(windows_ctrl_handler,
 						   TRUE)) {
+				LeaveCriticalSection(&SignalCriticalSection);
 				return push_error(
 					L,
 					"failed to set windows ctrl handler");
 			}
 		}
 		subscribedCtrlEvents |= (1 << event);
+		LeaveCriticalSection(&SignalCriticalSection);
 	}
 	// Also set CRT handler for completeness (SIGINT/SIGTERM)
 	if (signal(signum, standard_signal_handler) == SIG_ERR) {
@@ -328,14 +434,16 @@ static int eli_os_signal_handle(lua_State *L)
 	struct sigaction sa;
 	sa.sa_handler = standard_signal_handler;
 	sa.sa_flags = SA_RESTART;
-	sigemptyset(&sa.sa_mask);
-	if (sigaction(signum, &sa, NULL) == -1) {
+	/* Block every signal while enqueueing so a second handled signal cannot
+	 * interleave the bounds-check/store/increment sequence. */
+	sigfillset(&sa.sa_mask);
+	if (eli_signal_setsigaction(signum, &sa) == -1) {
 		return push_error(L, "failed to set signal handler");
 	}
 #endif
 
-	// Store Lua Callback in Registry
-	lua_rawgeti(L, LUA_REGISTRYINDEX, handlersRef);
+	// Store Lua Callback in the state registry
+	push_handlers(L);
 	lua_pushvalue(L, 1); // Key: signum
 	lua_pushvalue(L, 2); // Value: function
 	lua_rawset(L, -3);
@@ -356,6 +464,9 @@ static int eli_os_signal_handle(lua_State *L)
 
 static int eli_os_signal_reset(lua_State *L)
 {
+	if (signal_require_main_state(L, "reset")) {
+		return 0; /* not reached; luaL_error long jumps */
+	}
 	int signum = (int)luaL_checkinteger(L, 1);
 
 	// Reset OS Handler
@@ -372,28 +483,28 @@ static int eli_os_signal_reset(lua_State *L)
 		event = CTRL_CLOSE_EVENT;
 		break;
 	}
+	EnterCriticalSection(&SignalCriticalSection);
 	if (event > -1 && subscribedCtrlEvents > 0) {
 		subscribedCtrlEvents &= ~(1 << event);
 		if (subscribedCtrlEvents == 0) {
-			if (!SetConsoleCtrlHandler(windows_ctrl_handler,
-						   FALSE)) {
-				return push_error(
-					L,
-					"failed to reset windows ctrl handler");
-			}
+			SetConsoleCtrlHandler(windows_ctrl_handler, FALSE);
 		}
 	}
+	LeaveCriticalSection(&SignalCriticalSection);
 	if (signal(signum, SIG_DFL) == SIG_ERR) {
 		return push_error(L, "failed to reset signal handler");
 	}
 #else
-	if (signal(signum, SIG_DFL) == SIG_ERR) {
+	struct sigaction sa = { 0 };
+	sa.sa_handler = SIG_DFL;
+	sigemptyset(&sa.sa_mask);
+	if (eli_signal_setsigaction(signum, &sa) == -1) {
 		return push_error(L, "failed to reset signal handler");
 	}
 #endif
 
 	// Remove Lua Callback
-	lua_rawgeti(L, LUA_REGISTRYINDEX, handlersRef);
+	push_handlers(L);
 	lua_pushvalue(L, 1);
 	lua_pushnil(L);
 	lua_rawset(L, -3);
@@ -404,23 +515,32 @@ static int eli_os_signal_reset(lua_State *L)
 
 static int eli_os_signal_handlers(lua_State *L)
 {
-	lua_rawgeti(L, LUA_REGISTRYINDEX, handlersRef);
-	lua_newtable(L);
+	push_handlers(L); /* handlers */
+	lua_newtable(L);  /* copy */
 	lua_pushnil(L);
 	while (lua_next(L, -3) != 0) {
-		lua_pushvalue(L, -2); // Key
-		lua_pushvalue(L, -2); // Value
-		lua_rawset(L, -6); // table[key] = value
+		lua_pushvalue(L, -2); /* key */
+		lua_pushvalue(L, -2); /* value */
+		lua_rawset(L, -5);    /* copy[key] = value */
 		lua_pop(L, 1);
 	}
-	lua_pop(L, 1);
+	lua_remove(L, -2); /* drop handlers, keep copy */
 	return 1;
 }
 
 static int eli_os_signal_raise(lua_State *L)
 {
 	int signum = (int)luaL_checkinteger(L, 1);
+	if (signum != 0 && signal_require_main_state(L, "raise")) {
+		return 0; /* not reached; luaL_error long jumps */
+	}
+#ifdef _WIN32
 	int res = raise(signum);
+#else
+	/* process-directed so the signal is delivered to the main thread; worker
+	 * threads keep handled signals blocked */
+	int res = kill(getpid(), signum);
+#endif
 	lua_pushboolean(L, res == 0);
 	return 1;
 }
@@ -434,14 +554,13 @@ static const struct luaL_Reg eliOsSignal[] = {
 	{ NULL, NULL },
 };
 
-int luaopen_eli_os_signal(lua_State *L)
+int eli_os_signal_open(lua_State *L)
 {
 #ifdef _WIN32
-	InitializeCriticalSection(&SignalCriticalSection);
+	call_once(&signal_once, signal_runtime_init);
 #endif
-
-	lua_newtable(L);
-	handlersRef = luaL_ref(L, LUA_REGISTRYINDEX);
+	push_handlers(L);
+	lua_pop(L, 1);
 
 	lua_newtable(L);
 	luaL_setfuncs(L, eliOsSignal, 0);
