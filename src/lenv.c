@@ -259,7 +259,11 @@ static int eli_env_popen_guard(lua_State *L)
 	 * popen can then close a reused pipe fd via that stale list entry. Own
 	 * the pid instead, so fclose and wait both stay outside the env lock.
 	 * CLOEXEC also closes previous popen pipes in every new executable. */
-	fflush(NULL);
+	/* Flush the standard streams the shell may inherit. Never fflush(NULL):
+	 * Darwin can traverse the stdio list while another worker is creating
+	 * or closing a pipe stream. */
+	fflush(stdout);
+	fflush(stderr);
 	eli_env_lock();
 	if (pipe_cloexec(fds) == -1) {
 		error = errno;
