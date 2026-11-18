@@ -323,9 +323,10 @@ static int eli_env_system(const char *command)
 	argv[2] = command;
 	argv[3] = NULL;
 	errno = 0;
+	/* Inherit the Win32 environment updated by SetEnvironmentVariable. */
 	child = has_comspec
-		? _spawnve(_P_NOWAIT, shell, argv, environ)
-		: _spawnvpe(_P_NOWAIT, shell, argv, environ);
+		? _spawnv(_P_NOWAIT, shell, argv)
+		: _spawnvp(_P_NOWAIT, shell, argv);
 	error = errno;
 	eli_env_unlock();
 	errno = error;
